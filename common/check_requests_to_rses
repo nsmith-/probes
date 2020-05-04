@@ -17,7 +17,7 @@ import datetime
 import sys
 import time
 
-from rucio.core import monitor
+from rucio.core import monitor, rse
 from rucio.db.sqla.session import BASE, get_session
 
 # Exit statuses
@@ -29,8 +29,11 @@ else:
     schema = ''
 
 if __name__ == "__main__":
+    debug = False
+    if "-d" in sys.argv:
+        debug = True
 
-    scope = "stresstest"
+    scope = "cms"
 
     try:
         session = get_session()
@@ -40,44 +43,35 @@ if __name__ == "__main__":
         timezoneoffset = int((datetime.datetime.now() - datetime.datetime.utcnow()).seconds)
 
         # check requests to different sites
-        sql = "select /*+ index_ffs(REQUESTS REQUESTS_TYP_STA_CRE_IDX) */ {schema}id2rse(dest_rse_id) rse, state, count(*) \
-               from {schema}requests where request_type='T'  group by dest_rse_id, state".format(schema=schema)
+        sql = "select /*+ index_ffs(REQUESTS REQUESTS_TYP_STA_CRE_IDX) */ {schema}rses.rse rse, state, count(*) \
+               from {schema}requests join {schema}rses on requests.dest_rse_id = rses.id where request_type='T' group by rse, state".format(schema=schema)
         result = session.execute(sql).fetchall()
         for rse, state, num in result:
-            # print "requests.%s.%s %s" % (state, rse, num)
-            monitor.record_gauge(stat='%s.requests.%s.%s' % (scope, state, rse), value=num)
+            if debug:
+                print "requests.all.%s.%s %s" % (state, rse, num)
+            monitor.record_gauge(stat='%s.requests.all.%s.%s' % (scope, state, rse), value=num)
 
-        # check left requests which are 12 hours old to different sites
-        timeLimit = datetime.datetime.utcnow() - datetime.timedelta(hours=12)
-        sql = "select /*+ index_ffs(REQUESTS REQUESTS_TYP_STA_CRE_IDX) */ {schema}d2rse(dest_rse_id) rse, state, count(*) \
-              from {schema}requests where request_type='T' and created_at<=to_timestamp('".format(schema=schema) \
-              + str(timeLimit) + "','YYYY-MM-dd HH24:MI:SS.FF') group by dest_rse_id, state".format(schema=schema)
-        result = session.execute(sql).fetchall()
-        for rse, state, num in result:
-            # print 'requests.12Hours_old.%s.%s %s' % (state, rse, num)
-            monitor.record_gauge(stat='%s.requests.12Hours_old.%s.%s' % (scope, state, rse), value=num)
-
-        # check left requests which are 24 hours old to different sites
-        timeLimit = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
-        sql = "select /*+ index_ffs(REQUESTS REQUESTS_TYP_STA_CRE_IDX) */ {schema}id2rse(dest_rse_id) rse, state, count(*) \
-              from {schema}requests where request_type='T' and created_at<=to_timestamp('".format(schema=schema) \
-              + str(timeLimit) + "','YYYY-MM-dd HH24:MI:SS.FF') group by dest_rse_id, state".format(schema=schema)
-        result = session.execute(sql).fetchall()
-        for rse, state, num in result:
-            # print 'requests.24Hours_old.%s.%s %s' % (state, rse, num)
-            monitor.record_gauge(stat='%s.requests.24Hours_old.%s.%s' % (scope, state, rse), value=num)
-
-        # check left requests which are 48 hours old to different sites
-        timeLimit = datetime.datetime.utcnow() - datetime.timedelta(hours=48)
-        sql = "select /*+ index_ffs(REQUESTS REQUESTS_TYP_STA_CRE_IDX) */ {schema}id2rse(dest_rse_id) rse, state, count(*) from {schema}requests \
-               where request_type='T' and created_at<=to_timestamp('".format(schema=schema) + str(timeLimit) \
-              + "','YYYY-MM-dd HH24:MI:SS.FF') group by dest_rse_id, state".format(schema=schema)
-        result = session.execute(sql).fetchall()
-        for rse, state, num in result:
-            # print 'requests.48Hours_old.%s.%s %s' % (state, rse, num)
-            monitor.record_gauge(stat='%s.requests.48Hours_old.%s.%s' % (scope, state, rse), value=num)
+        ages = {
+            '12Hours': datetime.timedelta(hours=12),
+            '24Hours': datetime.timedelta(hours=12),
+            '48Hours': datetime.timedelta(hours=48),
+            '7Days': datetime.timedelta(days=7),
+        }
+        for aname, adelta in ages.items():
+            # check left requests which are more than X old to different sites
+            timeLimit = datetime.datetime.utcnow() - adelta
+            sql = "select /*+ index_ffs(REQUESTS REQUESTS_TYP_STA_CRE_IDX) */ {schema}rses.rse rse, state, count(*) \
+                from {schema}requests join {schema}rses on requests.dest_rse_id = rses.id where request_type='T' and requests.created_at<=to_timestamp('".format(schema=schema) \
+                + str(timeLimit) + "','YYYY-MM-dd HH24:MI:SS.FF') group by rse, state".format(schema=schema)
+            result = session.execute(sql).fetchall()
+            for rse, state, num in result:
+                if debug:
+                    print "requests.%s.%s.%s %s" % (state, aname, rse, num)
+                monitor.record_gauge(stat='%s.requests.%s.%s.%s' % (scope, aname, state, rse), value=num)
 
     except:
+        if debug:
+            raise
         sys.exit(UNKNOWN)
     finally:
         session.remove()
